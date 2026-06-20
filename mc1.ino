@@ -1,5 +1,6 @@
 #include <DHT.h>
 #include <ESP8266WebServer.h>
+#include <Ticker.h>
 #include "env.h"
 
 #define D0 16
@@ -19,7 +20,7 @@
 
 #define SER D5
 #define RCLK D2
-#define SRCLK D4
+#define SRCLK D8
 
 #define DSP_ZERO   0b01111110
 #define DSP_ONE    0b00011000
@@ -38,7 +39,62 @@
 #define DSP_E      0b01100111
 #define DSP_OFF    0b00000000
 
+#define TICK_US 500
+#define TICKS_PER_DIGIT 20
+
+#define SCREEN_DIM_FACTOR_MAX 3
+#define DHT_OFFSET 0
 #define TOGGLE_BUTTON digitalRead(0) == 0
+
+DHT dht(DHTIN, DHT22);
+ESP8266WebServer server(80);
+
+float temp = NAN;
+float hum = NAN;
+unsigned long lastRead = 0;
+
+volatile byte digitA = DSP_OFF, digitB = DSP_OFF;
+volatile bool showingA = true;
+volatile int tickCount = 0;
+volatile uint8_t screenDimFactor = 1;
+
+void IRAM_ATTR dispISR() {
+  int onTicks;
+
+  switch (screenDimFactor) {
+    case 1: onTicks = TICKS_PER_DIGIT / 2; break;
+    case 2: onTicks = TICKS_PER_DIGIT / 4; break;
+    case 3: onTicks = 1; break;
+    default: onTicks = TICKS_PER_DIGIT; break;
+  }
+
+  if (tickCount == 0) {
+    digitalWrite(DSP1, HIGH);
+    digitalWrite(DSP2, HIGH);
+
+    if (showingA) {
+      shiftData(digitA);
+      digitalWrite(DSP1, LOW);
+    } else {
+      shiftData(digitB);
+      digitalWrite(DSP2, LOW);
+    }
+  }
+
+  if (tickCount == onTicks) {
+    digitalWrite(DSP1, HIGH);
+    digitalWrite(DSP2, HIGH);
+  }
+
+  tickCount++;
+
+  if (tickCount >= TICKS_PER_DIGIT) {
+    tickCount = 0;
+    showingA = !showingA;
+  }
+
+  timer1_write(2500);
+}
 
 byte numberToDisplay(int n, bool dp) {
   byte number;
@@ -58,14 +114,6 @@ byte numberToDisplay(int n, bool dp) {
   if (dp) number = number | DSP_DP;
   return number;
 }
-
-DHT dht(DHTIN, DHT11);
-ESP8266WebServer server(80);
-
-float temp = NAN;
-float hum = NAN;
-unsigned long lastRead = 0;
-bool activateDisplay = true;
 
 void handleGetRequest() {
   String json = "{\"t\":\"" + String(temp) + "\",\"h\":\"" + String(hum) + "\"}";
@@ -123,34 +171,9 @@ void shiftData(byte data) {
   digitalWrite(RCLK, HIGH);
 }
 
-void shiftClear() {
-  shiftData(0x0000);
-}
-
 void display(byte a, byte b) {
-  const int enabled = LOW;
-  const int disabled = HIGH;
-
-  digitalWrite(DSP1, disabled);
-  digitalWrite(DSP2, disabled);
-
-  shiftData(a);
-  digitalWrite(DSP1, enabled);
-  delayMicroseconds(1000);
-  digitalWrite(DSP1, disabled);
-
-  shiftData(b);
-  digitalWrite(DSP2, enabled);
-  delayMicroseconds(1000);
-  digitalWrite(DSP2, disabled);
-}
-
-void displayFor(int ms, byte a, byte b, bool doYield) {
-  for (int i = 0; i < ms; i++) {
-    display(a, b);
-    delay(1);
-    if (doYield) yield();
-  }
+  digitA = a;
+  digitB = b;
 }
 
 void setup() {
@@ -167,9 +190,11 @@ void setup() {
   pinMode(SRCLK, OUTPUT);
 
   setupWifi();
-  delay(3000);
   dht.begin();
-  delay(2000);
+
+  timer1_attachInterrupt(dispISR);
+  timer1_enable(TIM_DIV16, TIM_EDGE, TIM_SINGLE);
+  timer1_write(2500);
 }
 
 void loop() {
@@ -185,13 +210,14 @@ void loop() {
     float t = dht.readTemperature();
     float h = dht.readHumidity();
 
-    if (!isnan(t)) temp = t;
+    if (!isnan(t)) temp = t + DHT_OFFSET;
     if (!isnan(h)) hum = h;
 
     Serial.print("DHTIN(" + String(DHTIN) + "): ");
     Serial.print(digitalRead(DHTIN));
-    Serial.print(" (t="); Serial.print(t);
-    Serial.print(" h="); Serial.print(h);
+    Serial.print(" (t="); Serial.print(temp);
+    Serial.print(" f="); Serial.print((temp * 9.0 / 5.0) + 32 + 0.5);
+    Serial.print(" h="); Serial.print(hum);
     Serial.println(")");
 
     lastRead = millis();
@@ -201,20 +227,22 @@ void loop() {
     digitalWrite(LED_BUILTIN, LOW);
     while (TOGGLE_BUTTON);
     digitalWrite(LED_BUILTIN, HIGH);
-    activateDisplay = !activateDisplay;
+
+    screenDimFactor++;
+    if (screenDimFactor > SCREEN_DIM_FACTOR_MAX) screenDimFactor = 0;
 
     Serial.print("Toggle activated: ");
-    Serial.println(activateDisplay ? "true" : "false");
+    Serial.println(screenDimFactor);
   }
 
-  if (activateDisplay) {
+  if (screenDimFactor > 0) {
     if (isnan(temp) || isnan(hum)) {
       display(isnan(temp) ? DSP_E : DSP_OFF, isnan(hum) ? DSP_E : DSP_OFF);
     } else {
       int f = (temp * 9.0 / 5.0) + 32 + 0.5;
 
       if (f < 0 && f > -10) {
-        display(DSP_MINUS, numberToDisplay(f, false));
+        display(DSP_MINUS, numberToDisplay(-f, false));
       } else if (f >= 0 && f < 10) {
         display(DSP_OFF, numberToDisplay(f, false));
       } else if (f < 100) {
