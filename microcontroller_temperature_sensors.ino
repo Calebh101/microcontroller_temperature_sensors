@@ -51,7 +51,10 @@ ESP8266WebServer server(80);
 
 float temp = NAN;
 float hum = NAN;
+
 unsigned long lastRead = 0;
+unsigned long bootTime = 0;
+unsigned long disconnects = 0;
 
 volatile byte digitA = DSP_OFF, digitB = DSP_OFF;
 volatile bool showingA = true;
@@ -129,6 +132,7 @@ void setupWifi() {
       unsigned long startTime = millis();
       const unsigned long timeout = 15000; // ms
 
+      WiFi.disconnect();
       WiFi.mode(WIFI_STA);
       WiFi.begin(WIFI_SSID, WIFI_PASS);
 
@@ -176,8 +180,27 @@ void display(byte a, byte b) {
   digitB = b;
 }
 
+bool displayNumber(int n) {
+  if (n < 0 && n > -10) {
+    display(DSP_MINUS, numberToDisplay(-n, false));
+  } else if (n >= 0 && n < 10) {
+    display(DSP_OFF, numberToDisplay(n, false));
+  } else if (n < 100) {
+    int tens = n / 10;
+    int ones = n % 10;
+
+    display(numberToDisplay(tens, false), numberToDisplay(ones, false));
+  } else {
+    return false;
+  }
+
+  return true;
+}
+
 void setup() {
   Serial.begin(115200);
+  Serial.print("Reset reason: ");
+  Serial.println(ESP.getResetReason());
 
   pinMode(DHTIN, INPUT);
   pinMode(LED_BUILTIN, OUTPUT);
@@ -195,6 +218,8 @@ void setup() {
   timer1_attachInterrupt(dispISR);
   timer1_enable(TIM_DIV16, TIM_EDGE, TIM_SINGLE);
   timer1_write(2500);
+
+  bootTime = millis();
 }
 
 void loop() {
@@ -202,7 +227,14 @@ void loop() {
     if (WiFi.status() == WL_CONNECTED) {
       digitalWrite(LED_BUILTIN, HIGH);
     } else {
+      disconnects++;
       digitalWrite(LED_BUILTIN, LOW);
+
+      Serial.print("Disconnected from WiFi: ");
+      Serial.println(disconnects);
+
+      displayNumber(disconnects);
+      setupWifi();
     }
   #endif
 
@@ -240,19 +272,7 @@ void loop() {
       display(isnan(temp) ? DSP_E : DSP_OFF, isnan(hum) ? DSP_E : DSP_OFF);
     } else {
       int f = (temp * 9.0 / 5.0) + 32 + 0.5;
-
-      if (f < 0 && f > -10) {
-        display(DSP_MINUS, numberToDisplay(-f, false));
-      } else if (f >= 0 && f < 10) {
-        display(DSP_OFF, numberToDisplay(f, false));
-      } else if (f < 100) {
-        int tens = f / 10;
-        int ones = f % 10;
-
-        display(numberToDisplay(tens, false), numberToDisplay(ones, false));
-      } else {
-        display(f >= 100 ? DSP_DP : DSP_OFF, f <= -10 ? DSP_DP : DSP_OFF);
-      }
+      displayNumber(f);
     }
   } else {
     display(DSP_OFF, DSP_OFF);
