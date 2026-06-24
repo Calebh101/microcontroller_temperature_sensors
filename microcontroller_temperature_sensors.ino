@@ -42,9 +42,17 @@
 #define TICK_US 500
 #define TICKS_PER_DIGIT 20
 
-#define SCREEN_DIM_FACTOR_MAX 3
+#define SCREEN_DIM_FACTOR_MAX 2
 #define DHT_OFFSET 0
 #define TOGGLE_BUTTON digitalRead(0) == 0
+
+#ifndef ENABLE_LIGHTS
+  #define ENABLE_LIGHTS true
+#endif
+
+#ifndef DISCONNECT_SIM
+  #define DISCONNECT_SIM false
+#endif
 
 DHT dht(DHTIN, DHT22);
 ESP8266WebServer server(80);
@@ -59,15 +67,23 @@ unsigned long disconnects = 0;
 volatile byte digitA = DSP_OFF, digitB = DSP_OFF;
 volatile bool showingA = true;
 volatile int tickCount = 0;
-volatile uint8_t screenDimFactor = 1;
+
+#if ENABLE_LIGHTS
+  volatile uint8_t screenDimFactor = 1;
+#else
+  volatile uint8_t screenDimFactor = 0;
+#endif
+
+#if DISCONNECT_SIM
+  bool didSimDisconnect = false;
+#endif
 
 void IRAM_ATTR dispISR() {
   int onTicks;
 
   switch (screenDimFactor) {
-    case 1: onTicks = TICKS_PER_DIGIT / 2; break;
-    case 2: onTicks = TICKS_PER_DIGIT / 4; break;
-    case 3: onTicks = 1; break;
+    case 1: onTicks = TICKS_PER_DIGIT / 4; break;
+    case 2: onTicks = 1; break;
     default: onTicks = TICKS_PER_DIGIT; break;
   }
 
@@ -125,7 +141,6 @@ void handleGetRequest() {
 
 void setupWifi() {
   Serial.println("Setting up WiFi...");
-  digitalWrite(16, LOW);
 
   #ifdef WIFI_ENABLED
     #if WIFI_ENABLED
@@ -159,8 +174,6 @@ void setupWifi() {
       }
     #endif
   #endif
-
-  digitalWrite(16, HIGH);
 }
 
 void shiftData(byte data) {
@@ -199,7 +212,7 @@ bool displayNumber(int n) {
 
 void setup() {
   Serial.begin(115200);
-  Serial.print("Reset reason: ");
+  Serial.print("\n\n\n\n--- Started ---\nReset reason: ");
   Serial.println(ESP.getResetReason());
 
   pinMode(DHTIN, INPUT);
@@ -212,6 +225,7 @@ void setup() {
   pinMode(RCLK, OUTPUT);
   pinMode(SRCLK, OUTPUT);
 
+  digitalWrite(LED_BUILTIN, HIGH);
   setupWifi();
   dht.begin();
 
@@ -227,14 +241,22 @@ void loop() {
     if (WiFi.status() == WL_CONNECTED) {
       digitalWrite(LED_BUILTIN, HIGH);
     } else {
-      disconnects++;
-      digitalWrite(LED_BUILTIN, LOW);
+      #if ENABLE_LIGHTS
+        digitalWrite(LED_BUILTIN, LOW);
+      #endif
 
+      disconnects++;
       Serial.print("Disconnected from WiFi: ");
       Serial.println(disconnects);
-
-      displayNumber(disconnects);
       setupWifi();
+    }
+  #endif
+
+  #if DISCONNECT_SIM
+    if (!didSimDisconnect && millis() - bootTime > 10000) {
+      Serial.println("Simulating WiFi disconnect");
+      WiFi.disconnect();
+      didSimDisconnect = true;
     }
   #endif
 
