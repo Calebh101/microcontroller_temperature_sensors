@@ -14,6 +14,7 @@
 #define D8 15
 
 #define DHTIN D1
+#define RST D0
 
 #define DSP1 D6
 #define DSP2 D7
@@ -44,6 +45,7 @@
 
 #define SCREEN_DIM_FACTOR_MAX 2
 #define DHT_OFFSET 0
+#define RESET_ON_DISCONNECT true
 #define TOGGLE_BUTTON digitalRead(0) == 0
 
 #ifndef ENABLE_LIGHTS
@@ -216,6 +218,7 @@ void setup() {
   Serial.println(ESP.getResetReason());
 
   pinMode(DHTIN, INPUT);
+  pinMode(RST, OUTPUT);
   pinMode(LED_BUILTIN, OUTPUT);
 
   pinMode(DSP1, OUTPUT);
@@ -226,6 +229,11 @@ void setup() {
   pinMode(SRCLK, OUTPUT);
 
   digitalWrite(LED_BUILTIN, HIGH);
+  digitalWrite(RST, HIGH);
+
+  digitalWrite(DSP1, HIGH);
+  digitalWrite(DSP2, HIGH);
+
   setupWifi();
   dht.begin();
 
@@ -248,7 +256,12 @@ void loop() {
       disconnects++;
       Serial.print("Disconnected from WiFi: ");
       Serial.println(disconnects);
-      setupWifi();
+
+      #if RESET_ON_DISCONNECT
+        digitalWrite(RST, LOW);
+      #else
+        setupWifi();
+      #endif
     }
   #endif
 

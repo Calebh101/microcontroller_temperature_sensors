@@ -7,4 +7,4 @@ BAUD=115200
 
 arduino-cli compile --verbose --fqbn $FQBN .
 arduino-cli upload -p $DEVICE --fqbn $FQBN .
-arduino-cli monitor -p $DEVICE -c baudrate=$BAUD
+arduino-cli monitor -p $DEVICE -c baudrate=$BAUD | ts
