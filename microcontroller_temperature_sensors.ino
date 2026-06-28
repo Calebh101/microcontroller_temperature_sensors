@@ -45,7 +45,8 @@
 
 #define SCREEN_DIM_FACTOR_MAX 2
 #define DHT_OFFSET 0
-#define RESET_ON_DISCONNECT true
+#define RECONNECT_INTERVAL 10000
+#define RESET_ON_DISCONNECT false
 #define TOGGLE_BUTTON digitalRead(0) == 0
 
 #ifndef ENABLE_LIGHTS
@@ -64,7 +65,7 @@ float hum = NAN;
 
 unsigned long lastRead = 0;
 unsigned long bootTime = 0;
-unsigned long disconnects = 0;
+unsigned long lastReconnectAttempt = 0;
 
 volatile byte digitA = DSP_OFF, digitB = DSP_OFF;
 volatile bool showingA = true;
@@ -79,6 +80,18 @@ volatile int tickCount = 0;
 #if DISCONNECT_SIM
   bool didSimDisconnect = false;
 #endif
+
+void IRAM_ATTR shiftData(byte data) {
+  digitalWrite(RCLK, LOW);
+
+  for (int i = 7; i >= 0; i--) {
+    digitalWrite(SRCLK, LOW);
+    digitalWrite(SER, (data >> i) & 1);
+    digitalWrite(SRCLK, HIGH);
+  }
+
+  digitalWrite(RCLK, HIGH);
+}
 
 void IRAM_ATTR dispISR() {
   int onTicks;
@@ -137,7 +150,7 @@ byte numberToDisplay(int n, bool dp) {
 }
 
 void handleGetRequest() {
-  String json = "{\"t\":\"" + String(temp) + "\",\"h\":\"" + String(hum) + "\"}";
+  String json = "{\"t\":\"" + String(temp) + "\",\"h\":\"" + String(hum) + "\",\"rssi\":" + String(WiFi.RSSI()) + "}";
   server.send(200, "application/json", json);
 }
 
@@ -152,6 +165,8 @@ void setupWifi() {
       WiFi.disconnect();
       WiFi.mode(WIFI_STA);
       WiFi.begin(WIFI_SSID, WIFI_PASS);
+      WiFi.setAutoReconnect(true);
+      WiFi.persistent(true);
 
       Serial.print("Connecting to ");
       Serial.print(WIFI_SSID);
@@ -178,18 +193,6 @@ void setupWifi() {
   #endif
 }
 
-void shiftData(byte data) {
-  digitalWrite(RCLK, LOW);
-
-  for (int i = 7; i >= 0; i--) {
-    digitalWrite(SRCLK, LOW);
-    digitalWrite(SER, (data >> i) & 1);
-    digitalWrite(SRCLK, HIGH);
-  }
-
-  digitalWrite(RCLK, HIGH);
-}
-
 void display(byte a, byte b) {
   digitA = a;
   digitB = b;
@@ -210,6 +213,21 @@ bool displayNumber(int n) {
   }
 
   return true;
+}
+
+const char* wlStatusToString(wl_status_t status) {
+  switch (status) {
+    case WL_NO_SHIELD:       return "WL_NO_SHIELD";       // 255
+    case WL_IDLE_STATUS:     return "WL_IDLE_STATUS";     // 0
+    case WL_NO_SSID_AVAIL:   return "WL_NO_SSID_AVAIL";   // 1
+    case WL_SCAN_COMPLETED:  return "WL_SCAN_COMPLETED";  // 2
+    case WL_CONNECTED:       return "WL_CONNECTED";       // 3
+    case WL_CONNECT_FAILED:  return "WL_CONNECT_FAILED";  // 4
+    case WL_CONNECTION_LOST: return "WL_CONNECTION_LOST"; // 5
+    case WL_WRONG_PASSWORD:  return "WL_WRONG_PASSWORD";  // 6
+    case WL_DISCONNECTED:    return "WL_DISCONNECTED";    // 7
+    default:                 return "UNKNOWN";
+  }
 }
 
 void setup() {
@@ -245,23 +263,33 @@ void setup() {
 }
 
 void loop() {
+  bool read = millis() - lastRead >= 2000;
+
+  if (read) {
+    lastRead = millis();
+  }
+
   #if WIFI_ENABLED
-    if (WiFi.status() == WL_CONNECTED) {
-      digitalWrite(LED_BUILTIN, HIGH);
-    } else {
-      #if ENABLE_LIGHTS
-        digitalWrite(LED_BUILTIN, LOW);
-      #endif
+    if (read) {
+      Serial.printf("Connection status: %d (%s), RSSI: %d\n", WiFi.status(), wlStatusToString(WiFi.status()), WiFi.RSSI());
 
-      disconnects++;
-      Serial.print("Disconnected from WiFi: ");
-      Serial.println(disconnects);
+      if (WiFi.status() != WL_CONNECTED) {
+        #if ENABLE_LIGHTS
+          digitalWrite(LED_BUILTIN, LOW);
+        #endif
 
-      #if RESET_ON_DISCONNECT
-        digitalWrite(RST, LOW);
-      #else
-        setupWifi();
-      #endif
+        #if RESET_ON_DISCONNECT
+          digitalWrite(RST, LOW);
+          digitalWrite(RST, HIGH);
+        #endif
+
+        if (millis() - lastReconnectAttempt >= RECONNECT_INTERVAL) {
+          lastReconnectAttempt = millis();
+          Serial.println("Forcing WiFi reconnect...");
+          WiFi.disconnect();
+          WiFi.begin(WIFI_SSID, WIFI_PASS);
+        }
+      }
     }
   #endif
 
@@ -273,7 +301,9 @@ void loop() {
     }
   #endif
 
-  if (millis() - lastRead >= 2000) {
+  if (read) {
+    timer1_disable();
+
     float t = dht.readTemperature();
     float h = dht.readHumidity();
 
@@ -287,7 +317,8 @@ void loop() {
     Serial.print(" h="); Serial.print(hum);
     Serial.println(")");
 
-    lastRead = millis();
+    timer1_enable(TIM_DIV16, TIM_EDGE, TIM_SINGLE);
+    timer1_write(2500);
   }
 
   if (TOGGLE_BUTTON) {
