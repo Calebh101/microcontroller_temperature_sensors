@@ -289,6 +289,8 @@ void loop() {
           WiFi.disconnect();
           WiFi.begin(WIFI_SSID, WIFI_PASS);
         }
+      } else {
+        digitalWrite(LED_BUILTIN, HIGH);
       }
     }
   #endif
